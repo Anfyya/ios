@@ -9,6 +9,8 @@ on:
 
 permissions:
   contents: read
+  issues: write
+  pull-requests: write
 
 concurrency:
   group: ios-build-${{ github.ref }}
@@ -42,9 +44,13 @@ jobs:
         run: xcodebuild -list -project NodeScope.xcodeproj
 
       - name: Build simulator target
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          set -o pipefail
-          xcodebuild \
+          mkdir -p build
+          set +e
+          xcodebuild -quiet \
             -project NodeScope.xcodeproj \
             -scheme NodeScope \
             -configuration Release \
@@ -52,12 +58,31 @@ jobs:
             -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath build/SimulatorDerivedData \
             CODE_SIGNING_ALLOWED=NO \
-            clean build | xcbeautify
+            clean build > build/simulator.log 2>&1
+          STATUS=$?
+          if [ "$STATUS" -ne 0 ]; then
+            grep -nE '(^|[[:space:]])(error:|fatal error:)' build/simulator.log > build/compiler-errors.txt || tail -120 build/simulator.log > build/compiler-errors.txt
+            {
+              echo '### Xcode 26 simulator build failed'
+              echo
+              echo '```text'
+              cat build/compiler-errors.txt
+              echo '```'
+            } > build/pr-comment.md
+            cat build/pr-comment.md
+            if [ -n "$PR_NUMBER" ]; then
+              gh pr comment "$PR_NUMBER" --body-file build/pr-comment.md
+            fi
+            exit "$STATUS"
+          fi
 
       - name: Build unsigned device app
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          set -o pipefail
-          xcodebuild \
+          set +e
+          xcodebuild -quiet \
             -project NodeScope.xcodeproj \
             -scheme NodeScope \
             -configuration Release \
@@ -67,7 +92,23 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY='' \
-            clean build | xcbeautify
+            clean build > build/device.log 2>&1
+          STATUS=$?
+          if [ "$STATUS" -ne 0 ]; then
+            grep -nE '(^|[[:space:]])(error:|fatal error:)' build/device.log > build/compiler-errors.txt || tail -120 build/device.log > build/compiler-errors.txt
+            {
+              echo '### Xcode 26 device build failed'
+              echo
+              echo '```text'
+              cat build/compiler-errors.txt
+              echo '```'
+            } > build/pr-comment.md
+            cat build/pr-comment.md
+            if [ -n "$PR_NUMBER" ]; then
+              gh pr comment "$PR_NUMBER" --body-file build/pr-comment.md
+            fi
+            exit "$STATUS"
+          fi
 
       - name: Package unsigned IPA
         run: |

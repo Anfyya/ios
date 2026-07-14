@@ -25,7 +25,7 @@ struct HomeView: View {
                         .symbolRenderingMode(.hierarchical)
                     Text("节点体检")
                         .font(.system(size: 36, weight: .bold, design: .rounded))
-                    Text("联通、延迟、丢包与 IP 风险一次测完")
+                    Text("DNS、服务可用性与 IP 风险一次测完")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
@@ -102,8 +102,18 @@ struct LiveTestView: View {
                     currentIP: model.currentIP
                 )
 
-                SectionHeader(title: "站点联通", subtitle: "每个域名 5 次 TCP 主动探测 + 1 次 HTTPS 可访问性检测")
+                SectionHeader(
+                    title: "基础网络",
+                    subtitle: "6 个公共 DNS 各执行 5 次真实 ICMP Echo，统计延迟、成功率与丢包"
+                )
+                ForEach(model.orderedDNS) { result in
+                    DNSResultCard(result: result)
+                }
 
+                SectionHeader(
+                    title: "服务可用性",
+                    subtitle: "网站探测只判断对应服务能否访问，不参与基础网络达标"
+                )
                 ForEach(model.orderedConnectivity) { result in
                     EndpointResultCard(result: result)
                 }
@@ -251,10 +261,10 @@ struct EndpointResultCard: View {
             }
 
             HStack(spacing: 18) {
-                MetricItem(title: "平均", value: milliseconds(result.averageLatency))
+                MetricItem(title: "TCP 平均", value: milliseconds(result.averageLatency))
                 MetricItem(title: "最低", value: milliseconds(result.minimumLatency))
-                MetricItem(title: "最高", value: milliseconds(result.maximumLatency))
-                MetricItem(title: "丢包", value: result.samples.isEmpty ? "—" : result.packetLoss.formatted(.percent.precision(.fractionLength(0))))
+                MetricItem(title: "HTTPS", value: milliseconds(result.httpLatencyMilliseconds))
+                MetricItem(title: "失败率", value: result.samples.isEmpty ? "—" : result.packetLoss.formatted(.percent.precision(.fractionLength(0))))
             }
 
             ProgressView(value: result.reachability)
@@ -381,8 +391,10 @@ struct FinalResultView: View {
     var body: some View {
         VStack(spacing: 18) {
             ConclusionCard(conclusion: record.conclusion)
+            DNSLatencyChart(results: record.resolvedDNSResults)
+            DNSConnectivityThresholdCard(summary: record.dnsSummary)
             ConnectivityChart(results: record.connectivityResults)
-            ConnectivityThresholdCard(summary: record.connectivitySummary)
+            ServiceAvailabilityCard(summary: record.connectivitySummary)
             if let report = record.ipReport {
                 IPReportCard(report: report)
             }
@@ -431,13 +443,13 @@ struct ConclusionCard: View {
 struct ConnectivityChart: View {
     let results: [ConnectivityResult]
 
-    var chartValues: [ConnectivityResult] {
+    private var chartValues: [ConnectivityResult] {
         results.filter { $0.averageLatency != nil }
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("平均连接延迟")
+            Text("网站 TCP 平均延迟")
                 .font(.headline)
             Chart(chartValues) { result in
                 BarMark(
@@ -457,28 +469,30 @@ struct ConnectivityChart: View {
     }
 }
 
-struct ConnectivityThresholdCard: View {
+struct ServiceAvailabilityCard: View {
     let summary: ConnectivitySummary
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("基础联通门槛")
+            Text("服务可用性")
                 .font(.headline)
             ThresholdRow(
-                title: "百度达标",
-                detail: "成功率 ≥ 80%，丢包 ≤ 20%，平均延迟 ≤ 500ms，HTTPS 可访问",
-                passed: summary.baiduPass
+                title: "国外服务",
+                detail: summary.reachableForeignTargets.isEmpty
+                    ? "Google、Gemini、OpenAI、ChatGPT、Claude、Grok、xAI 均未确认可访问"
+                    : summary.reachableForeignTargets.map { $0.target.name }.joined(separator: "、"),
+                passed: !summary.reachableForeignTargets.isEmpty
             )
             ThresholdRow(
-                title: "任意国外站点能通",
-                detail: summary.reachableForeignTargets.isEmpty ? "当前没有国外站点可达" : summary.reachableForeignTargets.map { $0.target.name }.joined(separator: "、"),
-                passed: summary.foreignPass
+                title: "国内服务",
+                detail: summary.reachableDomesticTargets.isEmpty
+                    ? "百度、哔哩哔哩、my78.cyou 均未确认可访问"
+                    : summary.reachableDomesticTargets.map { $0.target.name }.joined(separator: "、"),
+                passed: !summary.reachableDomesticTargets.isEmpty
             )
-            ThresholdRow(
-                title: "基础联通结论",
-                detail: summary.baselinePass ? "合格" : "不合格，但已继续完成 IP 质量检测",
-                passed: summary.baselinePass
-            )
+            Text("这里不参与基础网络合格判定，只说明对应网站当前是否可访问。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
         .padding(18)
         .glassEffect(.regular, in: .rect(cornerRadius: 24))
@@ -665,10 +679,17 @@ struct HistoryDetailView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 FinalResultView(record: record)
-                SectionHeader(title: "站点明细", subtitle: "保存了每次主动探测与 HTTPS 检测结果")
+
+                SectionHeader(title: "DNS 明细", subtitle: "保存了每次 ICMP Echo 的延迟、成功与超时结果")
+                ForEach(record.resolvedDNSResults) { result in
+                    DNSResultCard(result: result)
+                }
+
+                SectionHeader(title: "服务明细", subtitle: "保存了每次 TCP 443 与 HTTPS 检测结果")
                 ForEach(record.connectivityResults) { result in
                     EndpointResultCard(result: result)
                 }
+
                 if let report = record.ipReport {
                     SectionHeader(title: "数据源明细", subtitle: "当次检测的完整 IP 观察结果")
                     ForEach(report.observations) { observation in
