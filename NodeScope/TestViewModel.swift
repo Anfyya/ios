@@ -98,6 +98,7 @@ final class TestViewModel: ObservableObject {
                 )
                 guard !Task.isCancelled else { return }
                 ipReport = report
+                currentIP = report.ip
             } catch {
                 errorMessage = "IP 质量检测失败：\(error.localizedDescription)"
             }

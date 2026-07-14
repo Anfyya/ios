@@ -194,7 +194,7 @@ struct IPObservation: Identifiable, Codable, Hashable, Sendable {
 }
 
 struct IPQualityReport: Codable, Hashable, Sendable {
-    let ip: String
+    private let rawIP: String
     let country: String?
     let countryCode: String?
     let region: String?
@@ -222,8 +222,151 @@ struct IPQualityReport: Codable, Hashable, Sendable {
     let failedSources: [String: String]
     let observations: [IPObservation]
 
-    var locationText: String {
-        [country, region, city].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " / ")
+    var ipAddress: String { rawIP }
+
+    var ip: String {
+        let location = chineseLocationText
+        return location.isEmpty ? rawIP : "\(rawIP)　\(location)"
+    }
+
+    var locationText: String { chineseLocationText }
+
+    var chineseLocationText: String {
+        let preferred = observations.first {
+            $0.ok && $0.source.caseInsensitiveCompare("ip-api.com") == .orderedSame
+        }
+        let countryName = firstChinese([
+            preferred?.country,
+            observations.first(where: { $0.ok && containsChinese($0.country) })?.country
+        ]) ?? localizedCountryName ?? "位置未知"
+
+        let regionName = firstChinese([
+            preferred?.region,
+            observations.first(where: { $0.ok && containsChinese($0.region) })?.region
+        ])
+        let cityName = firstChinese([
+            preferred?.city,
+            observations.first(where: { $0.ok && containsChinese($0.city) })?.city
+        ])
+
+        var components = [countryName]
+        for value in [regionName, cityName].compactMap({ $0 }) where !value.isEmpty {
+            if components.last != value { components.append(value) }
+        }
+        return components.joined(separator: " / ")
+    }
+
+    init(
+        ip: String,
+        country: String?,
+        countryCode: String?,
+        region: String?,
+        city: String?,
+        asn: String?,
+        asName: String?,
+        isp: String?,
+        org: String?,
+        proxy: Bool,
+        vpn: Bool,
+        tor: Bool,
+        hosting: Bool,
+        mobile: Bool,
+        abuser: Bool,
+        spammer: Bool,
+        mainlandGeo: Bool,
+        mainlandASN: Bool,
+        networkRiskScore: Int,
+        networkRiskLevel: String,
+        claudeRiskScore: Int,
+        claudeVerdict: String,
+        confidence: Int,
+        reasons: [String],
+        successfulSources: [String],
+        failedSources: [String: String],
+        observations: [IPObservation]
+    ) {
+        self.rawIP = ip
+        self.country = country
+        self.countryCode = countryCode
+        self.region = region
+        self.city = city
+        self.asn = asn
+        self.asName = asName
+        self.isp = isp
+        self.org = org
+        self.proxy = proxy
+        self.vpn = vpn
+        self.tor = tor
+        self.hosting = hosting
+        self.mobile = mobile
+        self.abuser = abuser
+        self.spammer = spammer
+        self.mainlandGeo = mainlandGeo
+        self.mainlandASN = mainlandASN
+        self.networkRiskScore = networkRiskScore
+        self.networkRiskLevel = networkRiskLevel
+        self.claudeRiskScore = claudeRiskScore
+        self.claudeVerdict = claudeVerdict
+        self.confidence = confidence
+        self.reasons = reasons
+        self.successfulSources = successfulSources
+        self.failedSources = failedSources
+        self.observations = observations
+    }
+
+    private var localizedCountryName: String? {
+        let code = observations.first(where: {
+            $0.ok && $0.source.caseInsensitiveCompare("ip-api.com") == .orderedSame
+        })?.countryCode ?? countryCode
+
+        guard let code, !code.isEmpty else { return nil }
+        return Locale(identifier: "zh_Hans_CN").localizedString(forRegionCode: code.uppercased())
+    }
+
+    private func firstChinese(_ values: [String?]) -> String? {
+        values.compactMap { value in
+            guard let value, !value.isEmpty, containsChinese(value) else { return nil }
+            return value
+        }.first
+    }
+
+    private func containsChinese(_ value: String?) -> Bool {
+        guard let value else { return false }
+        return value.unicodeScalars.contains { scalar in
+            (0x3400...0x4DBF).contains(scalar.value) ||
+            (0x4E00...0x9FFF).contains(scalar.value) ||
+            (0xF900...0xFAFF).contains(scalar.value)
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case rawIP = "ip"
+        case country
+        case countryCode
+        case region
+        case city
+        case asn
+        case asName
+        case isp
+        case org
+        case proxy
+        case vpn
+        case tor
+        case hosting
+        case mobile
+        case abuser
+        case spammer
+        case mainlandGeo
+        case mainlandASN
+        case networkRiskScore
+        case networkRiskLevel
+        case claudeRiskScore
+        case claudeVerdict
+        case confidence
+        case reasons
+        case successfulSources
+        case failedSources
+        case observations
     }
 }
 
