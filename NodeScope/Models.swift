@@ -1,6 +1,6 @@
 import Foundation
 
-// MARK: - Connectivity models
+// MARK: - Service connectivity models
 
 enum TargetRegion: String, Codable, Sendable {
     case global
@@ -141,22 +141,17 @@ struct ConnectivityResult: Identifiable, Codable, Hashable, Sendable {
 struct ConnectivitySummary: Sendable {
     let results: [ConnectivityResult]
 
-    var baiduResult: ConnectivityResult? {
-        results.first { $0.target.id == "baidu" }
-    }
-
-    // 用户指定的基础门槛：百度达标 + 任意一个国外站点能通。
-    var baiduPass: Bool {
-        guard let result = baiduResult, let average = result.averageLatency else { return false }
-        return result.reachability >= 0.8 && result.packetLoss <= 0.2 && average <= 500 && result.httpReachable
-    }
-
     var reachableForeignTargets: [ConnectivityResult] {
         results.filter { $0.target.isForeign && $0.reachableAtAll }
     }
 
-    var foreignPass: Bool { !reachableForeignTargets.isEmpty }
-    var baselinePass: Bool { baiduPass && foreignPass }
+    var reachableDomesticTargets: [ConnectivityResult] {
+        results.filter { !$0.target.isForeign && $0.reachableAtAll }
+    }
+
+    var reachableTargets: [ConnectivityResult] {
+        results.filter(\.reachableAtAll)
+    }
 
     var overallReachability: Double {
         let attempted = results.reduce(0) { $0 + $1.attemptedCount }
@@ -268,6 +263,7 @@ struct FinalConclusion: Codable, Hashable, Sendable {
 struct TestRecord: Identifiable, Codable, Hashable, Sendable {
     let id: UUID
     let createdAt: Date
+    let dnsResults: [DNSProbeResult]?
     let connectivityResults: [ConnectivityResult]
     let ipReport: IPQualityReport?
     let conclusion: FinalConclusion
@@ -275,15 +271,23 @@ struct TestRecord: Identifiable, Codable, Hashable, Sendable {
     init(
         id: UUID = UUID(),
         createdAt: Date = Date(),
+        dnsResults: [DNSProbeResult],
         connectivityResults: [ConnectivityResult],
         ipReport: IPQualityReport?,
         conclusion: FinalConclusion
     ) {
         self.id = id
         self.createdAt = createdAt
+        self.dnsResults = dnsResults
         self.connectivityResults = connectivityResults
         self.ipReport = ipReport
         self.conclusion = conclusion
+    }
+
+    var resolvedDNSResults: [DNSProbeResult] { dnsResults ?? [] }
+
+    var dnsSummary: DNSConnectivitySummary {
+        DNSConnectivitySummary(results: resolvedDNSResults)
     }
 
     var connectivitySummary: ConnectivitySummary {
@@ -303,7 +307,7 @@ enum TestPhase: String, Sendable {
     var title: String {
         switch self {
         case .idle: "准备检测"
-        case .connectivity: "正在检测站点联通"
+        case .connectivity: "正在检测 DNS 与服务联通"
         case .ipDetection: "正在获取出口 IP"
         case .ipQuality: "正在检测 IP 质量"
         case .finalizing: "正在生成结论"
