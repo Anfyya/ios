@@ -32,13 +32,19 @@ enum NodeTheme {
         }
     }
 
-    /// Latency tier tint, aligned with ProbeGrade thresholds.
     static func latencyTint(_ milliseconds: Double?) -> Color {
         guard let milliseconds else { return .red }
         if milliseconds < 80 { return .green }
         if milliseconds < 200 { return .mint }
         if milliseconds < 500 { return Color.yellow.mix(with: .orange, by: 0.55) }
         return .orange
+    }
+
+    static func riskTint(_ score: Int) -> Color {
+        if score < 0 { return .gray }
+        if score < 30 { return .green }
+        if score < 60 { return .orange }
+        return .red
     }
 }
 
@@ -55,7 +61,6 @@ struct AttemptSegment: Identifiable, Hashable {
     let state: State
 }
 
-/// Five per-attempt segments; fill encodes the latency tier of each probe.
 struct AttemptStrip: View {
     let segments: [AttemptSegment]
 
@@ -73,7 +78,6 @@ struct AttemptStrip: View {
                     .frame(width: 22, height: 8)
             }
         }
-        .animation(.spring(duration: 0.35), value: segments)
     }
 
     private func fill(for state: AttemptSegment.State) -> Color {
@@ -122,50 +126,26 @@ struct GradeChip: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
             .background(color.opacity(0.14), in: Capsule())
-            .overlay(Capsule().strokeBorder(color.opacity(0.25), lineWidth: 0.5))
     }
 }
 
-// MARK: - Ambient background
+// MARK: - Background
 
 struct AmbientBackground: View {
     @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        Group {
-            if reduceMotion {
-                mesh(phase: 0)
-            } else {
-                TimelineView(.animation(minimumInterval: 1 / 20)) { context in
-                    mesh(phase: context.date.timeIntervalSinceReferenceDate)
-                }
-            }
-        }
-        .ignoresSafeArea()
-    }
-
-    private func mesh(phase: TimeInterval) -> some View {
-        let t = phase / 9
-        let drift = Float(sin(t) * 0.14)
-        let swell = Float(cos(t * 0.8) * 0.12)
-        let base = colorScheme == .dark ? 0.30 : 0.16
-
-        return MeshGradient(
-            width: 3,
-            height: 3,
-            points: [
-                [0, 0], [0.5, 0], [1, 0],
-                [0, 0.5], [0.5 + drift, 0.45 + swell], [1, 0.5],
-                [0, 1], [0.5 - drift, 1], [1, 1]
-            ],
+        LinearGradient(
             colors: [
-                Color.indigo.opacity(base), Color.cyan.opacity(base * 0.7), Color.teal.opacity(base * 0.5),
-                Color.blue.opacity(base * 0.6), Color.indigo.opacity(base * 0.9), Color.cyan.opacity(base * 0.5),
-                Color.clear, Color.purple.opacity(base * 0.6), Color.blue.opacity(base * 0.4)
-            ]
+                Color.indigo.opacity(colorScheme == .dark ? 0.22 : 0.10),
+                Color.cyan.opacity(colorScheme == .dark ? 0.10 : 0.05),
+                Color.clear
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottom
         )
         .background(Color(.systemBackground))
+        .ignoresSafeArea()
     }
 }
 
@@ -176,36 +156,16 @@ struct HomeView: View {
         ZStack {
             AmbientBackground()
 
-            VStack(spacing: 30) {
+            VStack(spacing: 36) {
                 Spacer()
 
-                VStack(spacing: 16) {
+                VStack(spacing: 14) {
                     Image(systemName: "network.badge.shield.half.filled")
-                        .font(.system(size: 46, weight: .medium))
+                        .font(.system(size: 56, weight: .medium))
                         .symbolRenderingMode(.hierarchical)
-                        .foregroundStyle(
-                            LinearGradient(
-                                colors: [.blue, .indigo],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
-                        )
-                        .frame(width: 108, height: 108)
-                        .glassEffect(.regular, in: .circle)
-
-                    VStack(spacing: 8) {
-                        Text("节点体检")
-                            .font(.system(size: 36, weight: .bold, design: .rounded))
-                        Text("DNS、服务可用性与 IP 风险一次测完")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                HStack(spacing: 8) {
-                    CapabilityChip(symbol: "wave.3.right", title: "ICMP Echo")
-                    CapabilityChip(symbol: "bolt.horizontal", title: "TCP · HTTPS")
-                    CapabilityChip(symbol: "shield.lefthalf.filled", title: "IP 情报")
+                        .foregroundStyle(.blue)
+                    Text("节点体检")
+                        .font(.system(size: 36, weight: .bold, design: .rounded))
                 }
 
                 NavigationLink {
@@ -217,8 +177,8 @@ struct HomeView: View {
                         .padding(.vertical, 12)
                 }
                 .buttonStyle(.glassProminent)
-                .padding(.top, 6)
 
+                Spacer()
                 Spacer()
             }
             .padding(28)
@@ -238,72 +198,42 @@ struct HomeView: View {
     }
 }
 
-private struct CapabilityChip: View {
-    let symbol: String
-    let title: String
-
-    var body: some View {
-        Label(title, systemImage: symbol)
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .glassEffect(.regular, in: .capsule)
-    }
-}
-
-// MARK: - Live test
+// MARK: - Live test dashboard
 
 struct LiveTestView: View {
     @EnvironmentObject private var historyStore: HistoryStore
     @StateObject private var model = TestViewModel()
 
+    @State private var selectedDNS: DNSProbeResult?
+    @State private var selectedEndpoint: ConnectivityResult?
+    @State private var showIPDetail = false
+
     var body: some View {
         ScrollView {
-            LazyVStack(spacing: 16) {
-                ProgressHeader(
+            VStack(spacing: 14) {
+                VerdictHeader(
                     phase: model.phase,
                     progress: model.totalProgress,
-                    currentIP: model.currentIP
+                    currentIP: model.currentIP,
+                    record: model.finalRecord
                 )
 
-                SectionHeader(
-                    title: "基础网络",
-                    subtitle: "6 个公共 DNS 各执行 5 次真实 ICMP Echo，统计延迟、成功率与丢包"
-                )
-                ForEach(model.orderedDNS) { result in
-                    DNSResultCard(result: result)
-                }
+                DNSGroup(results: model.orderedDNS) { selectedDNS = $0 }
 
-                SectionHeader(
-                    title: "服务可用性",
-                    subtitle: "网站探测只判断对应服务能否访问，不参与基础网络达标"
-                )
-                ForEach(model.orderedConnectivity) { result in
-                    EndpointResultCard(result: result)
-                }
+                ServiceGroup(results: model.orderedConnectivity) { selectedEndpoint = $0 }
 
-                if model.phase == .ipDetection || model.phase == .ipQuality || model.phase == .finalizing || model.phase == .completed {
-                    SectionHeader(title: "IP 质量", subtitle: "6 个免 Key 数据源交叉验证，未知不会当作干净")
-
-                    if model.sourceObservations.isEmpty && model.phase != .completed {
-                        HStack(spacing: 12) {
-                            ProgressView()
-                            Text("正在获取出口 IP 与查询数据源…")
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                        }
-                        .padding(18)
-                        .glassEffect(.regular, in: .rect(cornerRadius: 22))
-                    }
-
-                    ForEach(model.sourceObservations) { observation in
-                        IPSourceCard(observation: observation)
+                if showIPSection {
+                    IPGroup(
+                        observations: model.sourceObservations,
+                        report: model.finalRecord?.ipReport,
+                        isLoading: model.phase != .completed && model.phase != .failed
+                    ) {
+                        showIPDetail = true
                     }
                 }
 
                 if let record = model.finalRecord {
-                    FinalResultView(record: record)
+                    FullReportLink(record: record)
                 } else if let error = model.errorMessage {
                     ErrorCard(message: error)
                 }
@@ -328,80 +258,471 @@ struct LiveTestView: View {
                 model.start(historyStore: historyStore)
             }
         }
+        .sheet(item: $selectedDNS) { result in
+            DetailSheet(title: result.target.name) {
+                DNSResultCard(result: result)
+            }
+        }
+        .sheet(item: $selectedEndpoint) { result in
+            DetailSheet(title: result.target.name) {
+                EndpointResultCard(result: result)
+            }
+        }
+        .sheet(isPresented: $showIPDetail) {
+            IPDetailSheet(
+                observations: model.sourceObservations,
+                report: model.finalRecord?.ipReport
+            )
+        }
+    }
+
+    private var showIPSection: Bool {
+        switch model.phase {
+        case .ipDetection, .ipQuality, .finalizing, .completed: true
+        default: false
+        }
     }
 }
 
-struct ProgressHeader: View {
+// MARK: - Verdict header
+
+struct VerdictHeader: View {
     let phase: TestPhase
     let progress: Double
     let currentIP: String?
+    let record: TestRecord?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 13) {
-            HStack(spacing: 12) {
-                Image(systemName: phaseSymbol)
-                    .font(.title3)
-                    .foregroundStyle(.tint)
-                    .symbolEffect(.pulse, isActive: isRunning)
-                    .frame(width: 34, height: 34)
-                    .background(.tint.opacity(0.12), in: Circle())
+        Group {
+            if let record {
+                completed(record)
+            } else {
+                running
+            }
+        }
+    }
 
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(phase.title)
-                        .font(.headline)
-                        .contentTransition(.numericText())
-                    if let currentIP {
-                        Text("出口 IP：\(currentIP)")
+    private func completed(_ record: TestRecord) -> some View {
+        let color = NodeTheme.color(for: record.conclusion.grade)
+        return HStack(spacing: 16) {
+            Image(systemName: record.conclusion.grade.symbol)
+                .font(.system(size: 44, weight: .medium))
+                .foregroundStyle(color)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(record.conclusion.title)
+                    .font(.title3.bold())
+                HStack(spacing: 8) {
+                    Text(record.conclusion.grade.title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(color)
+                    if let ip = record.ipReport?.ip {
+                        Text(ip)
                             .font(.caption.monospaced())
                             .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+            }
+            Spacer()
+        }
+        .padding(20)
+        .glassEffect(.regular.tint(color.opacity(0.08)), in: .rect(cornerRadius: 24))
+    }
+
+    private var running: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(phase.title)
+                        .font(.subheadline.weight(.semibold))
+                    if let currentIP {
+                        Text(currentIP)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
                 }
                 Spacer()
                 Text(progress, format: .percent.precision(.fractionLength(0)))
-                    .font(.headline.monospacedDigit())
+                    .font(.subheadline.weight(.semibold).monospacedDigit())
                     .contentTransition(.numericText())
             }
             ProgressView(value: progress)
-                .controlSize(.large)
                 .animation(.easeInOut(duration: 0.3), value: progress)
         }
-        .padding(20)
-        .glassEffect(.regular, in: .rect(cornerRadius: 26))
-    }
-
-    private var isRunning: Bool {
-        phase != .completed && phase != .failed && phase != .idle
-    }
-
-    private var phaseSymbol: String {
-        switch phase {
-        case .idle: "hourglass"
-        case .connectivity: "dot.radiowaves.left.and.right"
-        case .ipDetection: "location.viewfinder"
-        case .ipQuality: "shield.lefthalf.filled"
-        case .finalizing: "text.badge.checkmark"
-        case .completed: "checkmark.circle.fill"
-        case .failed: "exclamationmark.triangle.fill"
-        }
+        .padding(16)
+        .glassEffect(.regular, in: .rect(cornerRadius: 24))
     }
 }
 
-struct SectionHeader: View {
+// MARK: - Group container
+
+struct GroupCard<Content: View>: View {
     let title: String
-    let subtitle: String
+    let statusText: String?
+    let statusColor: Color
+    let content: Content
+
+    init(
+        title: String,
+        statusText: String? = nil,
+        statusColor: Color = .secondary,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.title = title
+        self.statusText = statusText
+        self.statusColor = statusColor
+        self.content = content()
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.title2.bold())
-            Text(subtitle)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if let statusText {
+                    Text(statusText)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(statusColor)
+                }
+            }
+            content
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.top, 8)
+        .padding(16)
+        .glassEffect(.regular, in: .rect(cornerRadius: 24))
     }
 }
+
+// MARK: - DNS group
+
+struct DNSGroup: View {
+    let results: [DNSProbeResult]
+    let onSelect: (DNSProbeResult) -> Void
+
+    var body: some View {
+        GroupCard(title: "基础网络", statusText: statusText, statusColor: statusColor) {
+            VStack(spacing: 0) {
+                ForEach(results) { result in
+                    Button {
+                        onSelect(result)
+                    } label: {
+                        CompactRow(
+                            color: NodeTheme.color(for: result.grade),
+                            name: result.target.name,
+                            trailing: trailingText(result),
+                            isTesting: result.grade == .testing
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    if result.id != results.last?.id {
+                        Divider().padding(.leading, 18)
+                    }
+                }
+            }
+        }
+    }
+
+    private var summary: DNSConnectivitySummary { .init(results: results) }
+    private var allComplete: Bool { results.allSatisfy(\.isComplete) && !results.isEmpty }
+
+    private var statusText: String? {
+        guard allComplete else { return nil }
+        return summary.baselinePass ? "合格" : "未达标"
+    }
+
+    private var statusColor: Color {
+        summary.baselinePass ? .green : .red
+    }
+
+    private func trailingText(_ result: DNSProbeResult) -> String? {
+        if result.grade == .testing { return nil }
+        if !result.reachableAtAll { return "不可达" }
+        return milliseconds(result.averageLatency)
+    }
+}
+
+// MARK: - Service group
+
+struct ServiceGroup: View {
+    let results: [ConnectivityResult]
+    let onSelect: (ConnectivityResult) -> Void
+
+    private let columns = [
+        GridItem(.flexible(), spacing: 8),
+        GridItem(.flexible(), spacing: 8)
+    ]
+
+    var body: some View {
+        GroupCard(title: "服务可用性", statusText: statusText, statusColor: statusColor) {
+            LazyVGrid(columns: columns, spacing: 8) {
+                ForEach(results) { result in
+                    Button {
+                        onSelect(result)
+                    } label: {
+                        ServiceTile(result: result)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.top, 4)
+        }
+    }
+
+    private var allComplete: Bool { results.allSatisfy(\.isComplete) && !results.isEmpty }
+    private var reachableCount: Int { results.filter(\.httpReachable).count }
+
+    private var statusText: String? {
+        guard allComplete else { return nil }
+        return "\(reachableCount)/\(results.count) 可访问"
+    }
+
+    private var statusColor: Color {
+        reachableCount > 0 ? .green : .red
+    }
+}
+
+struct ServiceTile: View {
+    let result: ConnectivityResult
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(NodeTheme.color(for: result.grade))
+                .frame(width: 7, height: 7)
+            Text(result.target.name)
+                .font(.caption.weight(.medium))
+                .lineLimit(1)
+            Spacer(minLength: 2)
+            trailing
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 10)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .contentShape(Rectangle())
+    }
+
+    @ViewBuilder
+    private var trailing: some View {
+        if result.grade == .testing {
+            ProgressView()
+                .controlSize(.mini)
+        } else if !result.reachableAtAll {
+            Text("×")
+                .font(.caption.bold())
+                .foregroundStyle(.red)
+        } else {
+            Text(milliseconds(result.averageLatency ?? result.httpLatencyMilliseconds))
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+// MARK: - IP group
+
+struct IPGroup: View {
+    let observations: [IPObservation]
+    let report: IPQualityReport?
+    let isLoading: Bool
+    let onTap: () -> Void
+
+    var body: some View {
+        GroupCard(title: "IP 质量", statusText: statusText, statusColor: .secondary) {
+            if let report {
+                Button(action: onTap) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text(report.ip)
+                                .font(.subheadline.monospaced())
+                                .lineLimit(1)
+                            Spacer()
+                            Text("可信度 \(report.confidence)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Image(systemName: "chevron.right")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
+                        HStack(spacing: 14) {
+                            RiskLabel(title: "网络风险", score: report.networkRiskScore)
+                            RiskLabel(title: "Claude 风险", score: report.claudeRiskScore)
+                            Spacer()
+                        }
+                        Text(report.claudeVerdict)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    .padding(.top, 4)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            } else if isLoading {
+                HStack(spacing: 10) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text(observations.isEmpty ? "正在获取出口 IP…" : "数据源 \(okCount)/\(observations.count)")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+                .padding(.vertical, 6)
+            }
+        }
+    }
+
+    private var okCount: Int { observations.filter(\.ok).count }
+
+    private var statusText: String? {
+        report == nil ? nil : "\(okCount) 个数据源"
+    }
+}
+
+struct RiskLabel: View {
+    let title: String
+    let score: Int
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(score < 0 ? "?" : "\(score)")
+                .font(.subheadline.bold().monospacedDigit())
+                .foregroundStyle(NodeTheme.riskTint(score))
+        }
+    }
+}
+
+// MARK: - Compact row
+
+struct CompactRow: View {
+    let color: Color
+    let name: String
+    let trailing: String?
+    let isTesting: Bool
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Circle()
+                .fill(color)
+                .frame(width: 8, height: 8)
+            Text(name)
+                .font(.subheadline)
+            Spacer()
+            if isTesting {
+                ProgressView()
+                    .controlSize(.mini)
+            } else if let trailing {
+                Text(trailing)
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            Image(systemName: "chevron.right")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.vertical, 10)
+        .contentShape(Rectangle())
+    }
+}
+
+// MARK: - Detail sheets
+
+struct DetailSheet<Content: View>: View {
+    let title: String
+    let content: Content
+
+    init(title: String, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.content = content()
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                content
+                    .padding(16)
+            }
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+        }
+        .presentationDetents([.medium, .large])
+    }
+}
+
+struct IPDetailSheet: View {
+    let observations: [IPObservation]
+    let report: IPQualityReport?
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                LazyVStack(spacing: 14) {
+                    if let report {
+                        IPReportCard(report: report)
+                    }
+                    ForEach(observations) { observation in
+                        IPSourceCard(observation: observation)
+                    }
+                }
+                .padding(16)
+            }
+            .navigationTitle("IP 质量")
+            .navigationBarTitleDisplayMode(.inline)
+        }
+        .presentationDetents([.large])
+    }
+}
+
+// MARK: - Full report
+
+struct FullReportLink: View {
+    let record: TestRecord
+
+    var body: some View {
+        NavigationLink {
+            FullReportView(record: record)
+        } label: {
+            Label("查看完整报告", systemImage: "doc.text.magnifyingglass")
+                .font(.subheadline.weight(.semibold))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+        }
+        .buttonStyle(.glass)
+    }
+}
+
+struct FullReportView: View {
+    let record: TestRecord
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(spacing: 16) {
+                ConclusionCard(conclusion: record.conclusion)
+                DNSConnectivityThresholdCard(summary: record.dnsSummary)
+                DNSLatencyChart(results: record.resolvedDNSResults)
+                ServiceAvailabilityCard(summary: record.connectivitySummary)
+                ConnectivityChart(results: record.connectivityResults)
+                if let report = record.ipReport {
+                    IPReportCard(report: report)
+                    ForEach(report.observations) { observation in
+                        IPSourceCard(observation: observation)
+                    }
+                }
+            }
+            .padding(16)
+            .padding(.bottom, 24)
+        }
+        .background(AmbientBackground())
+        .navigationTitle("完整报告")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+// MARK: - Detail cards
 
 struct EndpointResultCard: View {
     let result: ConnectivityResult
@@ -443,9 +764,6 @@ struct EndpointResultCard: View {
                 MetricItem(title: "失败率", value: result.samples.isEmpty ? "—" : result.packetLoss.formatted(.percent.precision(.fractionLength(0))))
             }
 
-            ProgressView(value: result.reachability)
-                .tint(gradeColor)
-
             if let status = result.httpStatusCode {
                 Text("HTTP \(status) · HTTPS 延迟 \(milliseconds(result.httpLatencyMilliseconds))")
                     .font(.caption.monospacedDigit())
@@ -458,7 +776,7 @@ struct EndpointResultCard: View {
             }
         }
         .padding(18)
-        .glassEffect(.regular.tint(gradeColor.opacity(0.06)), in: .rect(cornerRadius: 24))
+        .glassEffect(.regular, in: .rect(cornerRadius: 24))
     }
 
     private var gradeColor: Color {
@@ -556,42 +874,21 @@ struct FlagChip: View {
     }
 }
 
-struct FinalResultView: View {
-    let record: TestRecord
-
-    var body: some View {
-        VStack(spacing: 18) {
-            ConclusionCard(conclusion: record.conclusion)
-            DNSLatencyChart(results: record.resolvedDNSResults)
-            DNSConnectivityThresholdCard(summary: record.dnsSummary)
-            ConnectivityChart(results: record.connectivityResults)
-            ServiceAvailabilityCard(summary: record.connectivitySummary)
-            if let report = record.ipReport {
-                IPReportCard(report: report)
-            }
-        }
-    }
-}
-
 struct ConclusionCard: View {
     let conclusion: FinalConclusion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 14) {
+            HStack(spacing: 12) {
                 Image(systemName: conclusion.grade.symbol)
-                    .font(.system(size: 40, weight: .medium))
-                    .foregroundStyle(
-                        LinearGradient(
-                            colors: [conclusionColor, conclusionColor.mix(with: .black, by: 0.15)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
+                    .font(.largeTitle)
+                    .foregroundStyle(conclusionColor)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(conclusion.title)
                         .font(.title2.bold())
-                    GradeChip(title: conclusion.grade.title, color: conclusionColor)
+                    Text(conclusion.grade.title)
+                        .font(.subheadline.bold())
+                        .foregroundStyle(conclusionColor)
                 }
             }
             Divider()
@@ -663,9 +960,6 @@ struct ServiceAvailabilityCard: View {
                     : summary.reachableDomesticTargets.map { $0.target.name }.joined(separator: "、"),
                 passed: !summary.reachableDomesticTargets.isEmpty
             )
-            Text("这里不参与基础网络合格判定，只说明对应网站当前是否可访问。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
         .padding(18)
         .glassEffect(.regular, in: .rect(cornerRadius: 24))
@@ -749,18 +1043,11 @@ struct ScoreGauge: View {
                     .font(.headline.monospacedDigit())
             }
             .gaugeStyle(.accessoryCircularCapacity)
-            .tint(gaugeTint)
+            .tint(NodeTheme.riskTint(score))
             Text(title)
                 .font(.caption)
         }
         .frame(maxWidth: .infinity)
-    }
-
-    private var gaugeTint: Color {
-        if score < 0 { return .gray }
-        if score < 30 { return .green }
-        if score < 60 { return .orange }
-        return .red
     }
 }
 
@@ -776,6 +1063,8 @@ struct ErrorCard: View {
             .glassEffect(.regular.tint(.orange.opacity(0.08)), in: .rect(cornerRadius: 22))
     }
 }
+
+// MARK: - History
 
 struct HistoryView: View {
     @EnvironmentObject private var historyStore: HistoryStore
@@ -821,67 +1110,84 @@ struct HistoryRow: View {
     var body: some View {
         HStack(spacing: 12) {
             Image(systemName: record.conclusion.grade.symbol)
-                .font(.title3)
-                .foregroundStyle(historyColor)
-                .frame(width: 40, height: 40)
-                .background(historyColor.opacity(0.12), in: Circle())
+                .font(.title2)
+                .foregroundStyle(NodeTheme.color(for: record.conclusion.grade))
             VStack(alignment: .leading, spacing: 4) {
                 Text(record.conclusion.title)
                     .font(.headline)
-                Text(record.createdAt, format: .dateTime.year().month().day().hour().minute().second())
+                Text(record.createdAt, format: .dateTime.year().month().day().hour().minute())
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 if let ip = record.ipReport?.ip {
                     Text(ip)
                         .font(.caption2.monospaced())
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
             }
             Spacer()
         }
         .padding(.vertical, 4)
     }
-
-    private var historyColor: Color {
-        NodeTheme.color(for: record.conclusion.grade)
-    }
 }
 
 struct HistoryDetailView: View {
     let record: TestRecord
 
+    @State private var selectedDNS: DNSProbeResult?
+    @State private var selectedEndpoint: ConnectivityResult?
+    @State private var showIPDetail = false
+
     var body: some View {
         ScrollView {
-            LazyVStack(spacing: 16) {
+            VStack(spacing: 14) {
                 Text(record.createdAt, format: .dateTime.year().month().day().hour().minute().second())
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                FinalResultView(record: record)
 
-                SectionHeader(title: "DNS 明细", subtitle: "保存了每次 ICMP Echo 的延迟、成功与超时结果")
-                ForEach(record.resolvedDNSResults) { result in
-                    DNSResultCard(result: result)
-                }
+                VerdictHeader(phase: .completed, progress: 1, currentIP: record.ipReport?.ip, record: record)
 
-                SectionHeader(title: "服务明细", subtitle: "保存了每次 TCP 443 与 HTTPS 检测结果")
-                ForEach(record.connectivityResults) { result in
-                    EndpointResultCard(result: result)
-                }
+                DNSGroup(results: record.resolvedDNSResults) { selectedDNS = $0 }
 
-                if let report = record.ipReport {
-                    SectionHeader(title: "数据源明细", subtitle: "当次检测的完整 IP 观察结果")
-                    ForEach(report.observations) { observation in
-                        IPSourceCard(observation: observation)
+                ServiceGroup(results: record.connectivityResults) { selectedEndpoint = $0 }
+
+                if record.ipReport != nil {
+                    IPGroup(
+                        observations: record.ipReport?.observations ?? [],
+                        report: record.ipReport,
+                        isLoading: false
+                    ) {
+                        showIPDetail = true
                     }
                 }
+
+                FullReportLink(record: record)
             }
             .padding(16)
         }
         .background(AmbientBackground())
         .navigationTitle("检测详情")
         .navigationBarTitleDisplayMode(.inline)
+        .sheet(item: $selectedDNS) { result in
+            DetailSheet(title: result.target.name) {
+                DNSResultCard(result: result)
+            }
+        }
+        .sheet(item: $selectedEndpoint) { result in
+            DetailSheet(title: result.target.name) {
+                EndpointResultCard(result: result)
+            }
+        }
+        .sheet(isPresented: $showIPDetail) {
+            IPDetailSheet(
+                observations: record.ipReport?.observations ?? [],
+                report: record.ipReport
+            )
+        }
     }
 }
+
+// MARK: - Helpers
 
 func milliseconds(_ value: Double?) -> String {
     guard let value else { return "—" }
