@@ -1,5 +1,7 @@
 # NodeScope / 节点体检
 
+[![Build iOS App](https://github.com/Anfyya/ios/actions/workflows/build-ios.yml/badge.svg)](https://github.com/Anfyya/ios/actions/workflows/build-ios.yml)
+
 面向 iOS 26 的节点质量检测 App。主页仅保留一个“开始测试”按钮，右上角进入历史记录；界面使用 SwiftUI 原生 Liquid Glass 组件。
 
 ## 检测流程
