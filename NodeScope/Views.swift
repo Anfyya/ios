@@ -9,25 +9,203 @@ struct RootView: View {
     }
 }
 
-struct HomeView: View {
-    @State private var animateBackground = false
+// MARK: - Design tokens
+
+enum NodeTheme {
+    static func color(for grade: ProbeGrade) -> Color {
+        switch grade {
+        case .testing: .blue
+        case .excellent: .green
+        case .good: .mint
+        case .usable: Color.yellow.mix(with: .orange, by: 0.55)
+        case .poor: .orange
+        case .unreachable: .red
+        }
+    }
+
+    static func color(for grade: OverallGrade) -> Color {
+        switch grade {
+        case .excellent: .green
+        case .good: .mint
+        case .caution: .orange
+        case .poor: .red
+        }
+    }
+
+    /// Latency tier tint, aligned with ProbeGrade thresholds.
+    static func latencyTint(_ milliseconds: Double?) -> Color {
+        guard let milliseconds else { return .red }
+        if milliseconds < 80 { return .green }
+        if milliseconds < 200 { return .mint }
+        if milliseconds < 500 { return Color.yellow.mix(with: .orange, by: 0.55) }
+        return .orange
+    }
+}
+
+// MARK: - Shared components
+
+struct AttemptSegment: Identifiable, Hashable {
+    enum State: Hashable {
+        case pending
+        case success(Double?)
+        case failure
+    }
+
+    let id: Int
+    let state: State
+}
+
+/// Five per-attempt segments; fill encodes the latency tier of each probe.
+struct AttemptStrip: View {
+    let segments: [AttemptSegment]
 
     var body: some View {
-        ZStack {
-            AmbientBackground(isAnimating: animateBackground)
+        HStack(spacing: 5) {
+            ForEach(segments) { segment in
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .fill(fill(for: segment.state))
+                    .overlay {
+                        if segment.state == .pending {
+                            RoundedRectangle(cornerRadius: 3, style: .continuous)
+                                .strokeBorder(.secondary.opacity(0.3), lineWidth: 1)
+                        }
+                    }
+                    .frame(width: 22, height: 8)
+            }
+        }
+        .animation(.spring(duration: 0.35), value: segments)
+    }
 
-            VStack(spacing: 26) {
+    private func fill(for state: AttemptSegment.State) -> Color {
+        switch state {
+        case .pending: .clear
+        case .success(let latency): NodeTheme.latencyTint(latency)
+        case .failure: .red
+        }
+    }
+}
+
+extension AttemptStrip {
+    init(dnsSamples samples: [DNSProbeSample]) {
+        self.init(segments: (1...5).map { attempt in
+            guard let sample = samples.first(where: { $0.attempt == attempt }) else {
+                return AttemptSegment(id: attempt, state: .pending)
+            }
+            return AttemptSegment(
+                id: attempt,
+                state: sample.success ? .success(sample.latencyMilliseconds) : .failure
+            )
+        })
+    }
+
+    init(probeSamples samples: [ProbeSample]) {
+        self.init(segments: (1...5).map { attempt in
+            guard let sample = samples.first(where: { $0.attempt == attempt }) else {
+                return AttemptSegment(id: attempt, state: .pending)
+            }
+            return AttemptSegment(
+                id: attempt,
+                state: sample.success ? .success(sample.latencyMilliseconds) : .failure
+            )
+        })
+    }
+}
+
+struct GradeChip: View {
+    let title: String
+    let color: Color
+
+    var body: some View {
+        Text(title)
+            .font(.caption.bold())
+            .foregroundStyle(color)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(color.opacity(0.14), in: Capsule())
+            .overlay(Capsule().strokeBorder(color.opacity(0.25), lineWidth: 0.5))
+    }
+}
+
+// MARK: - Ambient background
+
+struct AmbientBackground: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        Group {
+            if reduceMotion {
+                mesh(phase: 0)
+            } else {
+                TimelineView(.animation(minimumInterval: 1 / 20)) { context in
+                    mesh(phase: context.date.timeIntervalSinceReferenceDate)
+                }
+            }
+        }
+        .ignoresSafeArea()
+    }
+
+    private func mesh(phase: TimeInterval) -> some View {
+        let t = phase / 9
+        let drift = Float(sin(t) * 0.14)
+        let swell = Float(cos(t * 0.8) * 0.12)
+        let base = colorScheme == .dark ? 0.30 : 0.16
+
+        return MeshGradient(
+            width: 3,
+            height: 3,
+            points: [
+                [0, 0], [0.5, 0], [1, 0],
+                [0, 0.5], [0.5 + drift, 0.45 + swell], [1, 0.5],
+                [0, 1], [0.5 - drift, 1], [1, 1]
+            ],
+            colors: [
+                Color.indigo.opacity(base), Color.cyan.opacity(base * 0.7), Color.teal.opacity(base * 0.5),
+                Color.blue.opacity(base * 0.6), Color.indigo.opacity(base * 0.9), Color.cyan.opacity(base * 0.5),
+                Color.clear, Color.purple.opacity(base * 0.6), Color.blue.opacity(base * 0.4)
+            ]
+        )
+        .background(Color(.systemBackground))
+    }
+}
+
+// MARK: - Home
+
+struct HomeView: View {
+    var body: some View {
+        ZStack {
+            AmbientBackground()
+
+            VStack(spacing: 30) {
                 Spacer()
 
-                VStack(spacing: 10) {
+                VStack(spacing: 16) {
                     Image(systemName: "network.badge.shield.half.filled")
-                        .font(.system(size: 54, weight: .medium))
+                        .font(.system(size: 46, weight: .medium))
                         .symbolRenderingMode(.hierarchical)
-                    Text("节点体检")
-                        .font(.system(size: 36, weight: .bold, design: .rounded))
-                    Text("DNS、服务可用性与 IP 风险一次测完")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(
+                            LinearGradient(
+                                colors: [.blue, .indigo],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+                        .frame(width: 108, height: 108)
+                        .glassEffect(.regular, in: .circle)
+
+                    VStack(spacing: 8) {
+                        Text("节点体检")
+                            .font(.system(size: 36, weight: .bold, design: .rounded))
+                        Text("DNS、服务可用性与 IP 风险一次测完")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                HStack(spacing: 8) {
+                    CapabilityChip(symbol: "wave.3.right", title: "ICMP Echo")
+                    CapabilityChip(symbol: "bolt.horizontal", title: "TCP · HTTPS")
+                    CapabilityChip(symbol: "shield.lefthalf.filled", title: "IP 情报")
                 }
 
                 NavigationLink {
@@ -39,6 +217,7 @@ struct HomeView: View {
                         .padding(.vertical, 12)
                 }
                 .buttonStyle(.glassProminent)
+                .padding(.top, 6)
 
                 Spacer()
             }
@@ -56,38 +235,24 @@ struct HomeView: View {
                 .accessibilityLabel("历史记录")
             }
         }
-        .onAppear {
-            withAnimation(.easeInOut(duration: 6).repeatForever(autoreverses: true)) {
-                animateBackground = true
-            }
-        }
     }
 }
 
-struct AmbientBackground: View {
-    let isAnimating: Bool
+private struct CapabilityChip: View {
+    let symbol: String
+    let title: String
 
     var body: some View {
-        ZStack {
-            LinearGradient(
-                colors: [Color.indigo.opacity(0.2), Color.cyan.opacity(0.12), Color.clear],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            Circle()
-                .fill(Color.blue.opacity(0.18))
-                .frame(width: 310, height: 310)
-                .blur(radius: 42)
-                .offset(x: isAnimating ? 150 : 90, y: isAnimating ? -250 : -180)
-            Circle()
-                .fill(Color.purple.opacity(0.15))
-                .frame(width: 260, height: 260)
-                .blur(radius: 48)
-                .offset(x: isAnimating ? -140 : -80, y: isAnimating ? 300 : 220)
-        }
-        .ignoresSafeArea()
+        Label(title, systemImage: symbol)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .glassEffect(.regular, in: .capsule)
     }
 }
+
+// MARK: - Live test
 
 struct LiveTestView: View {
     @EnvironmentObject private var historyStore: HistoryStore
@@ -146,7 +311,7 @@ struct LiveTestView: View {
             .padding(.horizontal, 16)
             .padding(.bottom, 30)
         }
-        .background(AmbientBackground(isAnimating: true))
+        .background(AmbientBackground())
         .navigationTitle("节点检测")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -173,10 +338,18 @@ struct ProgressHeader: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 13) {
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 12) {
+                Image(systemName: phaseSymbol)
+                    .font(.title3)
+                    .foregroundStyle(.tint)
+                    .symbolEffect(.pulse, isActive: isRunning)
+                    .frame(width: 34, height: 34)
+                    .background(.tint.opacity(0.12), in: Circle())
+
+                VStack(alignment: .leading, spacing: 3) {
                     Text(phase.title)
-                        .font(.title3.bold())
+                        .font(.headline)
+                        .contentTransition(.numericText())
                     if let currentIP {
                         Text("出口 IP：\(currentIP)")
                             .font(.caption.monospaced())
@@ -186,12 +359,30 @@ struct ProgressHeader: View {
                 Spacer()
                 Text(progress, format: .percent.precision(.fractionLength(0)))
                     .font(.headline.monospacedDigit())
+                    .contentTransition(.numericText())
             }
             ProgressView(value: progress)
                 .controlSize(.large)
+                .animation(.easeInOut(duration: 0.3), value: progress)
         }
         .padding(20)
         .glassEffect(.regular, in: .rect(cornerRadius: 26))
+    }
+
+    private var isRunning: Bool {
+        phase != .completed && phase != .failed && phase != .idle
+    }
+
+    private var phaseSymbol: String {
+        switch phase {
+        case .idle: "hourglass"
+        case .connectivity: "dot.radiowaves.left.and.right"
+        case .ipDetection: "location.viewfinder"
+        case .ipQuality: "shield.lefthalf.filled"
+        case .finalizing: "text.badge.checkmark"
+        case .completed: "checkmark.circle.fill"
+        case .failed: "exclamationmark.triangle.fill"
+        }
     }
 }
 
@@ -231,26 +422,11 @@ struct EndpointResultCard: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Text(result.grade.title)
-                    .font(.caption.bold())
-                    .foregroundStyle(gradeColor)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(gradeColor.opacity(0.12), in: Capsule())
+                GradeChip(title: result.grade.title, color: gradeColor)
             }
 
             HStack(spacing: 8) {
-                ForEach(1...5, id: \.self) { index in
-                    let sample = result.samples.first { $0.attempt == index }
-                    Circle()
-                        .fill(sampleColor(sample))
-                        .frame(width: 10, height: 10)
-                        .overlay {
-                            if sample == nil {
-                                Circle().stroke(.secondary.opacity(0.35), lineWidth: 1)
-                            }
-                        }
-                }
+                AttemptStrip(probeSamples: result.samples)
                 Spacer()
                 Label(
                     result.httpReachable ? "HTTPS 可访问" : (result.httpError == nil ? "等待 HTTPS" : "HTTPS 失败"),
@@ -282,23 +458,11 @@ struct EndpointResultCard: View {
             }
         }
         .padding(18)
-        .glassEffect(.regular, in: .rect(cornerRadius: 24))
+        .glassEffect(.regular.tint(gradeColor.opacity(0.06)), in: .rect(cornerRadius: 24))
     }
 
     private var gradeColor: Color {
-        switch result.grade {
-        case .testing: .blue
-        case .excellent: .green
-        case .good: .mint
-        case .usable: .yellow
-        case .poor: .orange
-        case .unreachable: .red
-        }
-    }
-
-    private func sampleColor(_ sample: ProbeSample?) -> Color {
-        guard let sample else { return .clear }
-        return sample.success ? .green : .red
+        NodeTheme.color(for: result.grade)
     }
 }
 
@@ -314,6 +478,7 @@ struct MetricItem: View {
             Text(value)
                 .font(.caption.bold().monospacedDigit())
                 .lineLimit(1)
+                .contentTransition(.numericText())
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -330,9 +495,7 @@ struct IPSourceCard: View {
                 Text(observation.source)
                     .font(.headline)
                 Spacer()
-                Text(observation.ok ? "成功" : "失败")
-                    .font(.caption.bold())
-                    .foregroundStyle(observation.ok ? .green : .red)
+                GradeChip(title: observation.ok ? "成功" : "失败", color: observation.ok ? .green : .red)
             }
 
             if observation.ok {
@@ -381,7 +544,15 @@ struct FlagChip: View {
             .foregroundStyle(value == true ? .red : (value == false ? .green : .secondary))
             .padding(.horizontal, 8)
             .padding(.vertical, 5)
-            .background(.thinMaterial, in: Capsule())
+            .background(chipBackground, in: Capsule())
+    }
+
+    private var chipBackground: AnyShapeStyle {
+        if value == true {
+            AnyShapeStyle(Color.red.opacity(0.12))
+        } else {
+            AnyShapeStyle(.thinMaterial)
+        }
     }
 }
 
@@ -407,16 +578,20 @@ struct ConclusionCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 12) {
+            HStack(spacing: 14) {
                 Image(systemName: conclusion.grade.symbol)
-                    .font(.largeTitle)
-                    .foregroundStyle(conclusionColor)
+                    .font(.system(size: 40, weight: .medium))
+                    .foregroundStyle(
+                        LinearGradient(
+                            colors: [conclusionColor, conclusionColor.mix(with: .black, by: 0.15)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
                 VStack(alignment: .leading, spacing: 3) {
                     Text(conclusion.title)
                         .font(.title2.bold())
-                    Text(conclusion.grade.title)
-                        .font(.subheadline.bold())
-                        .foregroundStyle(conclusionColor)
+                    GradeChip(title: conclusion.grade.title, color: conclusionColor)
                 }
             }
             Divider()
@@ -427,16 +602,11 @@ struct ConclusionCard: View {
                 .foregroundStyle(.secondary)
         }
         .padding(20)
-        .glassEffect(.regular, in: .rect(cornerRadius: 28))
+        .glassEffect(.regular.tint(conclusionColor.opacity(0.08)), in: .rect(cornerRadius: 28))
     }
 
     private var conclusionColor: Color {
-        switch conclusion.grade {
-        case .excellent: .green
-        case .good: .mint
-        case .caution: .orange
-        case .poor: .red
-        }
+        NodeTheme.color(for: conclusion.grade)
     }
 }
 
@@ -456,9 +626,12 @@ struct ConnectivityChart: View {
                     x: .value("延迟", result.averageLatency ?? 0),
                     y: .value("站点", result.target.name)
                 )
+                .foregroundStyle(NodeTheme.latencyTint(result.averageLatency).gradient)
+                .cornerRadius(5)
                 .annotation(position: .trailing) {
                     Text(milliseconds(result.averageLatency))
                         .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
                 }
             }
             .chartXAxisLabel("毫秒")
@@ -576,10 +749,18 @@ struct ScoreGauge: View {
                     .font(.headline.monospacedDigit())
             }
             .gaugeStyle(.accessoryCircularCapacity)
+            .tint(gaugeTint)
             Text(title)
                 .font(.caption)
         }
         .frame(maxWidth: .infinity)
+    }
+
+    private var gaugeTint: Color {
+        if score < 0 { return .gray }
+        if score < 30 { return .green }
+        if score < 60 { return .orange }
+        return .red
     }
 }
 
@@ -592,7 +773,7 @@ struct ErrorCard: View {
             .foregroundStyle(.orange)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(18)
-            .glassEffect(.regular, in: .rect(cornerRadius: 22))
+            .glassEffect(.regular.tint(.orange.opacity(0.08)), in: .rect(cornerRadius: 22))
     }
 }
 
@@ -640,8 +821,10 @@ struct HistoryRow: View {
     var body: some View {
         HStack(spacing: 12) {
             Image(systemName: record.conclusion.grade.symbol)
-                .font(.title2)
+                .font(.title3)
                 .foregroundStyle(historyColor)
+                .frame(width: 40, height: 40)
+                .background(historyColor.opacity(0.12), in: Circle())
             VStack(alignment: .leading, spacing: 4) {
                 Text(record.conclusion.title)
                     .font(.headline)
@@ -660,12 +843,7 @@ struct HistoryRow: View {
     }
 
     private var historyColor: Color {
-        switch record.conclusion.grade {
-        case .excellent: .green
-        case .good: .mint
-        case .caution: .orange
-        case .poor: .red
-        }
+        NodeTheme.color(for: record.conclusion.grade)
     }
 }
 
@@ -699,17 +877,17 @@ struct HistoryDetailView: View {
             }
             .padding(16)
         }
-        .background(AmbientBackground(isAnimating: true))
+        .background(AmbientBackground())
         .navigationTitle("检测详情")
         .navigationBarTitleDisplayMode(.inline)
     }
 }
 
-private func milliseconds(_ value: Double?) -> String {
+func milliseconds(_ value: Double?) -> String {
     guard let value else { return "—" }
     return "\(Int(value.rounded()))ms"
 }
 
-private extension String {
+extension String {
     var nilIfEmpty: String? { isEmpty ? nil : self }
 }

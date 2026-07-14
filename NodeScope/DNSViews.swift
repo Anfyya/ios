@@ -20,26 +20,11 @@ struct DNSResultCard: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Text(result.grade.title)
-                    .font(.caption.bold())
-                    .foregroundStyle(gradeColor)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(gradeColor.opacity(0.12), in: Capsule())
+                GradeChip(title: result.grade.title, color: gradeColor)
             }
 
             HStack(spacing: 8) {
-                ForEach(1...5, id: \.self) { index in
-                    let sample = result.samples.first { $0.attempt == index }
-                    Circle()
-                        .fill(sampleColor(sample))
-                        .frame(width: 10, height: 10)
-                        .overlay {
-                            if sample == nil {
-                                Circle().stroke(.secondary.opacity(0.35), lineWidth: 1)
-                            }
-                        }
-                }
+                AttemptStrip(dnsSamples: result.samples)
                 Spacer()
                 Label("ICMP Echo", systemImage: "wave.3.right")
                     .font(.caption)
@@ -47,9 +32,9 @@ struct DNSResultCard: View {
             }
 
             HStack(spacing: 18) {
-                MetricItem(title: "平均", value: dnsMilliseconds(result.averageLatency))
-                MetricItem(title: "最低", value: dnsMilliseconds(result.minimumLatency))
-                MetricItem(title: "最高", value: dnsMilliseconds(result.maximumLatency))
+                MetricItem(title: "平均", value: milliseconds(result.averageLatency))
+                MetricItem(title: "最低", value: milliseconds(result.minimumLatency))
+                MetricItem(title: "最高", value: milliseconds(result.maximumLatency))
                 MetricItem(title: "丢包", value: result.samples.isEmpty ? "—" : result.packetLoss.formatted(.percent.precision(.fractionLength(0))))
             }
 
@@ -64,23 +49,11 @@ struct DNSResultCard: View {
             }
         }
         .padding(18)
-        .glassEffect(.regular, in: .rect(cornerRadius: 24))
+        .glassEffect(.regular.tint(gradeColor.opacity(0.06)), in: .rect(cornerRadius: 24))
     }
 
     private var gradeColor: Color {
-        switch result.grade {
-        case .testing: .blue
-        case .excellent: .green
-        case .good: .mint
-        case .usable: .yellow
-        case .poor: .orange
-        case .unreachable: .red
-        }
-    }
-
-    private func sampleColor(_ sample: DNSProbeSample?) -> Color {
-        guard let sample else { return .clear }
-        return sample.success ? .green : .red
+        NodeTheme.color(for: result.grade)
     }
 }
 
@@ -100,9 +73,12 @@ struct DNSLatencyChart: View {
                     x: .value("延迟", result.averageLatency ?? 0),
                     y: .value("DNS", result.target.name)
                 )
+                .foregroundStyle(NodeTheme.latencyTint(result.averageLatency).gradient)
+                .cornerRadius(5)
                 .annotation(position: .trailing) {
-                    Text(dnsMilliseconds(result.averageLatency))
+                    Text(milliseconds(result.averageLatency))
                         .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
                 }
             }
             .chartXAxisLabel("毫秒")
@@ -143,9 +119,4 @@ struct DNSConnectivityThresholdCard: View {
         .padding(18)
         .glassEffect(.regular, in: .rect(cornerRadius: 24))
     }
-}
-
-private func dnsMilliseconds(_ value: Double?) -> String {
-    guard let value else { return "—" }
-    return "\(Int(value.rounded()))ms"
 }
