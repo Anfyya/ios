@@ -1,0 +1,90 @@
+name: Build iOS App
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Xcode 26 build
+    runs-on: macos-26
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode 26.5
+        run: sudo xcode-select -s /Applications/Xcode_26.5.app/Contents/Developer
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Validate project
+        run: xcodebuild -list -project NodeScope.xcodeproj
+
+      - name: Build simulator target
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project NodeScope.xcodeproj \
+            -scheme NodeScope \
+            -configuration Release \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build/SimulatorDerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            clean build | xcbeautify
+
+      - name: Build unsigned device app
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project NodeScope.xcodeproj \
+            -scheme NodeScope \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/DeviceDerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY='' \
+            clean build | xcbeautify
+
+      - name: Package unsigned IPA
+        run: |
+          APP_PATH="build/DeviceDerivedData/Build/Products/Release-iphoneos/NodeScope.app"
+          test -d "$APP_PATH"
+          rm -rf build/Payload build/NodeScope-unsigned.ipa
+          mkdir -p build/Payload
+          cp -R "$APP_PATH" build/Payload/NodeScope.app
+          ditto -c -k --sequesterRsrc --keepParent build/Payload build/NodeScope-unsigned.ipa
+          shasum -a 256 build/NodeScope-unsigned.ipa | tee build/NodeScope-unsigned.ipa.sha256
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NodeScope-iOS26-${{ github.sha }}
+          path: |
+            build/NodeScope-unsigned.ipa
+            build/NodeScope-unsigned.ipa.sha256
+          if-no-files-found: error
+          retention-days: 30
