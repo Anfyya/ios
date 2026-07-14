@@ -38,9 +38,6 @@ struct DNSResultCard: View {
                 MetricItem(title: "丢包", value: result.samples.isEmpty ? "—" : result.packetLoss.formatted(.percent.precision(.fractionLength(0))))
             }
 
-            ProgressView(value: result.reachability)
-                .tint(gradeColor)
-
             if let error = result.samples.last(where: { !$0.success })?.error, !result.reachableAtAll {
                 Text(error)
                     .font(.caption)
@@ -49,7 +46,7 @@ struct DNSResultCard: View {
             }
         }
         .padding(18)
-        .glassEffect(.regular.tint(gradeColor.opacity(0.06)), in: .rect(cornerRadius: 24))
+        .glassEffect(.regular, in: .rect(cornerRadius: 24))
     }
 
     private var gradeColor: Color {
